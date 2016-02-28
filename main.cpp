@@ -10,16 +10,17 @@
 
 using namespace std;
 
-using Features = vector<float>;
-
+template<typename FeatureType>
 struct RandomForest {
+    using Features = vector<FeatureType>;
+
     struct Node {
         bool isLeaf_;
 
-        float leafValue_;
+        FeatureType leafValue_;
 
         int featureIndex_;
-        float featureValue_;
+        FeatureType featureValue_;
         shared_ptr<Node> left_;
         shared_ptr<Node> right_;
         size_t index_;
@@ -47,8 +48,8 @@ struct RandomForest {
 
     vector<shared_ptr<Node>> nodes_;
 
-    float eval(const Features& features) const {
-        float result = 0.f;
+    FeatureType eval(const Features& features) const {
+        FeatureType result = 0.f;
         for (const auto& node: nodes_) {
             result += node->eval(features);
         }
@@ -79,28 +80,35 @@ struct RandomForest {
     }
 };
 
-union Vector {
+union __attribute__((aligned(32))) FloatVector {
     __m256 data_;
     float floatData_[8];
 };
 
-union IVector {
+union __attribute__((aligned(32))) DoubleVector {
+    __m256d data_;
+    float doubleData_[4];
+};
+
+union __attribute__((aligned(32))) IVector {
     __m256i data_;
     int intData_[8];
 };
 
+template<typename FeatureType>
 struct FlatForest {
+    using RandomForestF = RandomForest<FeatureType>;
     size_t size_;
     int iTerminator_;
 
     vector<int> featureIndex_;
-    vector<float> featureValue_;
+    vector<FeatureType> featureValue_;
     vector<int> leftIndex_;
     vector<int> rightIndex_;
-    vector<float> nodeValue_;
+    vector<FeatureType> nodeValue_;
     IVector terminator_;
 
-    FlatForest(const RandomForest& f) {
+    FlatForest(const RandomForestF& f) {
         iTerminator_ = f.size();
         size_ = iTerminator_ + 1;
         featureIndex_.resize(size_);
@@ -121,7 +129,7 @@ struct FlatForest {
         terminator_.data_ = _mm256_set1_epi32(iTerminator_);
     }
 
-    void fill(shared_ptr<RandomForest::Node> node, int nextIndex) {
+    void fill(shared_ptr<typename RandomForestF::Node> node, int nextIndex) {
         if (!node->isLeaf_) {
             featureIndex_[node->index_] = node->featureIndex_;
             featureValue_[node->index_] = node->featureValue_;
@@ -139,9 +147,9 @@ struct FlatForest {
         }
     }
 
-    float eval(const Features& features) {
+    FeatureType eval(const typename RandomForestF::Features& features) {
         int begin = 0;
-        float result = 0.f;
+        FeatureType result = 0.f;
         while (begin != iTerminator_) {
             result += nodeValue_[begin];
             if (features[featureIndex_[begin]] < featureValue_[begin]) {
@@ -670,29 +678,19 @@ struct FlatForest {
         }
     }
 
-    Vector eval8(float** features) {
+    FloatVector eval8(float** features) {
         IVector current;
         current.data_ = _mm256_set1_epi32(0);
-        Vector result;
+        FloatVector result;
         result.data_ = _mm256_set1_ps(0.f);
 
-        Vector nodeValues;
+        FloatVector nodeValues;
         IVector featureIndices;
-        Vector featureValues;
+        FloatVector featureValues;
         IVector leftIndices;
         IVector rightIndices;
-        Vector featuresHere;
+        FloatVector featuresHere;
         while (-1 != _mm256_movemask_epi8(_mm256_cmpeq_epi32(current.data_, terminator_.data_))) {
-            /*
-            if (0 == (rand() % 1000)) {
-                cout << "size: " << size_ << " ";
-                for (int i = 0; i < 8; ++i) {
-                    cout << current.intData_[i] << " ";
-                }
-                cout << endl;
-            }
-            */
-
             nodeValues.data_ = _mm256_i32gather_ps(&nodeValue_[0], current.data_, 4);
             result.data_ = _mm256_add_ps(result.data_, nodeValues.data_);
 
@@ -710,25 +708,27 @@ struct FlatForest {
     }
 };
 
-shared_ptr<RandomForest::Node> generateRandomNode(size_t nFeatures, size_t maxLevel, size_t level) {
+template<typename FeatureType>
+shared_ptr<typename RandomForest<FeatureType>::Node> generateRandomNode(size_t nFeatures, size_t maxLevel, size_t level) {
     bool isLeaf = 0 == (rand() % (maxLevel - level));
-    auto node = make_shared<RandomForest::Node>();
+    auto node = make_shared<typename RandomForest<FeatureType>::Node>();
     node->isLeaf_ = isLeaf;
     if (isLeaf) {
-        node->leafValue_ = static_cast<float>(rand())/RAND_MAX;
+        node->leafValue_ = static_cast<FeatureType>(rand())/RAND_MAX;
     } else {
         node->featureIndex_ = rand() % nFeatures;
-        node->featureValue_ = static_cast<float>(rand())/RAND_MAX;
-        node->left_ = generateRandomNode(nFeatures, maxLevel, level + 1);
-        node->right_ = generateRandomNode(nFeatures, maxLevel, level + 1);
+        node->featureValue_ = static_cast<FeatureType>(rand())/RAND_MAX;
+        node->left_ = generateRandomNode<FeatureType>(nFeatures, maxLevel, level + 1);
+        node->right_ = generateRandomNode<FeatureType>(nFeatures, maxLevel, level + 1);
     }
     return node;
 }
 
-shared_ptr<RandomForest> generateRandomForest(size_t nFeatures, size_t nTrees, size_t nLevel) {
-    auto result = make_shared<RandomForest>();
+template<typename FeatureType>
+shared_ptr<RandomForest<FeatureType>> generateRandomForest(size_t nFeatures, size_t nTrees, size_t nLevel) {
+    auto result = make_shared<RandomForest<FeatureType>>();
     for (size_t iTree = 0; iTree < nTrees; ++iTree) {
-        result->nodes_.emplace_back(generateRandomNode(nFeatures, nLevel, 0));
+        result->nodes_.emplace_back(generateRandomNode<FeatureType>(nFeatures, nLevel, 0));
     }
     result->reindex();
 
@@ -751,28 +751,30 @@ struct ScopedTimer {
 };
 
 int main() {
+    using FT = float;
+    using RF = RandomForest<FT>;
     static constexpr size_t nFeatures = 100;
-    shared_ptr<RandomForest> f;
+    shared_ptr<RF> f;
     {
         ScopedTimer timer("gen");
-        f = generateRandomForest(nFeatures, 1000, 10);
+        f = generateRandomForest<FT>(nFeatures, 1000, 10);
     }
 
     static constexpr size_t kN = 1000;
-    vector<Features> features(kN);
+    vector<RF::Features> features(kN);
     {
         ScopedTimer timer("gen features");
         for (size_t i = 0; i < kN; ++i) {
             features[i].resize(nFeatures);
             for (size_t j = 0; j < nFeatures; ++j) {
-                features[i][j] = static_cast<float>(rand())/RAND_MAX;
+                features[i][j] = static_cast<FT>(rand())/RAND_MAX;
             }
         }
     }
 
     {
         ScopedTimer timer("eval");
-        float sum = 0;
+        FT sum = 0;
         for (size_t j = 0; j < 30; ++j) {
             for (size_t i = 0; i < features.size(); ++i) {
                 sum += f->eval(features[i]);
@@ -781,15 +783,16 @@ int main() {
         cout << "sum: " << sum << endl;
     }
 
-    shared_ptr<FlatForest> ff;
+    using FF = FlatForest<FT>;
+    shared_ptr<FF> ff;
     {
         ScopedTimer timer("flattening");
-        ff = make_shared<FlatForest>(*f);
+        ff = make_shared<FF>(*f);
     }
 
     {
         ScopedTimer timer("eval");
-        float sum = 0;
+        FT sum = 0;
         for (size_t j = 0; j < 30; ++j) {
             for (size_t i = 0; i < features.size(); ++i) {
                 sum += ff->eval(features[i]);
@@ -800,14 +803,14 @@ int main() {
 
     {
         ScopedTimer timer("eval2");
-        float sum = 0;
+        FT sum = 0;
         for (size_t j = 0; j < 30; ++j) {
             for (size_t i = 0; i < features.size()/8; ++i) {
-                float* data[8];
+                FT* data[8];
                 for (size_t k = 0; k < 8; ++k) {
                     data[k] = &features[8*i + k][0];
                 }
-                Vector v = ff->eval8(data);
+                FloatVector v = ff->eval8(data);
                 for (size_t k = 0; k < 8; ++k) {
                     sum += v.floatData_[k];
                 }
