@@ -738,7 +738,7 @@ struct FlatForest {
         }
     }
 
-    FloatVector evalAVX(float** features) {
+    FloatVector evalAVXSparse(float** features) {
         IVector8 current;
         current.data_ = _mm256_set1_epi32(0);
         FloatVector result;
@@ -750,6 +750,7 @@ struct FlatForest {
         IVector8 leftIndices;
         IVector8 rightIndices;
         FloatVector featuresHere;
+
         while (-1 != _mm256_movemask_epi8(_mm256_cmpeq_epi32(current.data_, terminator_.data_))) {
             nodeValues.data_ = _mm256_i32gather_ps(&nodeValue_[0], current.data_, 4);
             result.data_ = _mm256_add_ps(result.data_, nodeValues.data_);
@@ -765,6 +766,50 @@ struct FlatForest {
             current.data_ = poorManBlend8(mask, rightIndices.data_, leftIndices.data_);
         }
         return result;
+    }
+
+    FloatVector evalAVXDense(float* features0, const IVector8& offsets) {
+        IVector8 current;
+        current.data_ = _mm256_set1_epi32(0);
+        FloatVector result;
+        result.data_ = _mm256_set1_ps(0.f);
+
+        FloatVector nodeValues;
+        IVector8 featureIndices;
+        FloatVector featureValues;
+        IVector8 leftIndices;
+        IVector8 rightIndices;
+        FloatVector featuresHere;
+        IVector8 featureAddresses;
+
+        while (-1 != _mm256_movemask_epi8(_mm256_cmpeq_epi32(current.data_, terminator_.data_))) {
+            nodeValues.data_ = _mm256_i32gather_ps(&nodeValue_[0], current.data_, 4);
+            result.data_ = _mm256_add_ps(result.data_, nodeValues.data_);
+
+            featureIndices.data_ = _mm256_i32gather_epi32(&featureIndex_[0], current.data_, 4);
+            featureValues.data_ = _mm256_i32gather_ps(&featureValue_[0], current.data_, 4);
+            leftIndices.data_ = _mm256_i32gather_epi32(&leftIndex_[0], current.data_, 4);
+            rightIndices.data_ = _mm256_i32gather_epi32(&rightIndex_[0], current.data_, 4);
+
+            featureAddresses.data_ = _mm256_add_epi32(featureIndices.data_, offsets.data_);
+            featuresHere.data_ = _mm256_i32gather_ps(features0, featureAddresses.data_, 4);
+
+            int mask = _mm256_movemask_ps(_mm256_cmp_ps(featuresHere.data_, featureValues.data_, _CMP_LT_OS));
+            current.data_ = poorManBlend8(mask, rightIndices.data_, leftIndices.data_);
+        }
+        return result;
+    }
+
+    FloatVector evalAVX(float** features) {
+        IVector8 offsets;
+        for (size_t i = 0; i < 8; ++i) {
+            ssize_t diff = (features[i] - features[0])/sizeof(float);
+            if ( diff >= numeric_limits<int>::max() && diff <= numeric_limits<int>::min() ) {
+                return evalAVXSparse(features);
+            }
+            offsets.intData_[i] = diff;
+        }
+        return evalAVXDense(features[0], offsets);
     }
 
     static inline __m128i poorManBlend4(int mask, const __m128i& a, const __m128i& b) {
@@ -806,7 +851,7 @@ struct FlatForest {
         }
     }
 
-    DoubleVector evalAVX(double** features) {
+    DoubleVector evalAVXSparse(double** features) {
         IVector4 current;
         current.data_ = _mm_set1_epi32(0);
         DoubleVector result;
@@ -832,7 +877,50 @@ struct FlatForest {
             int mask = _mm256_movemask_pd(_mm256_cmp_pd(featuresHere.data_, featureValues.data_, _CMP_LT_OS));
             current.data_ = poorManBlend4(mask, rightIndices.data_, leftIndices.data_);
         }
+        return std::move(result);
+    }
+
+    DoubleVector evalAVXDense(double* features0, const IVector4& offsets) {
+        IVector4 current;
+        current.data_ = _mm_set1_epi32(0);
+        DoubleVector result;
+        result.data_ = _mm256_set1_pd(0.);
+
+        DoubleVector nodeValues;
+        IVector4 featureIndices;
+        DoubleVector featureValues;
+        IVector4 leftIndices;
+        IVector4 rightIndices;
+        DoubleVector featuresHere;
+        IVector4 featureAddresses;
+        while (((1 << 16) - 1) != _mm_movemask_epi8(_mm_cmpeq_epi32(current.data_, terminator_.data_))) {
+            nodeValues.data_ = _mm256_i32gather_pd(&nodeValue_[0], current.data_, 8);
+            result.data_ = _mm256_add_pd(result.data_, nodeValues.data_);
+
+            featureIndices.data_ = _mm_i32gather_epi32(&featureIndex_[0], current.data_, 4);
+            featureValues.data_ = _mm256_i32gather_pd(&featureValue_[0], current.data_, 8);
+            leftIndices.data_ = _mm_i32gather_epi32(&leftIndex_[0], current.data_, 4);
+            rightIndices.data_ = _mm_i32gather_epi32(&rightIndex_[0], current.data_, 4);
+
+            featureAddresses.data_ = _mm_add_epi32(featureIndices.data_, offsets.data_);
+            featuresHere.data_ = _mm256_i32gather_pd(features0, featureAddresses.data_, 8);
+
+            int mask = _mm256_movemask_pd(_mm256_cmp_pd(featuresHere.data_, featureValues.data_, _CMP_LT_OS));
+            current.data_ = poorManBlend4(mask, rightIndices.data_, leftIndices.data_);
+        }
         return result;
+    }
+
+    DoubleVector evalAVX(double** features) {
+        IVector4 offsets;
+        for (size_t i = 0; i < 4; ++i) {
+            ssize_t diff = (features[i] - features[0])/sizeof(float);
+            if ( diff >= numeric_limits<int>::max() && diff <= numeric_limits<int>::min() ) {
+                return evalAVXSparse(features);
+            }
+            offsets.intData_[i] = diff;
+        }
+        return evalAVXDense(features[0], offsets);
     }
 
     static void* operator new(size_t size) throw()
