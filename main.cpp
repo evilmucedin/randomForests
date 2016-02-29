@@ -81,23 +81,71 @@ struct RandomForest {
 };
 
 union __attribute__((aligned(32))) FloatVector {
-    __m256 data_;
+    using AVXType = __m256;
+    static const size_t kSize = 8;
+    AVXType data_;
     float floatData_[8];
 };
 
 union __attribute__((aligned(32))) DoubleVector {
+    using AVXType = __m256d;
+    static const size_t kSize = 4;
     __m256d data_;
-    float doubleData_[4];
+    double floatData_[4];
 };
 
-union __attribute__((aligned(32))) IVector {
+union __attribute__((aligned(32))) IVector8 {
+    using AVXType = __m256i;
+    static const size_t kSize = 8;
     __m256i data_;
     int intData_[8];
+};
+
+union __attribute__((aligned(32))) IVector4 {
+    using AVXType = __m128i;
+    static const size_t kSize = 4;
+    __m128i data_;
+    int intData_[4];
+};
+
+template<typename T>
+T InitVector(int value);
+
+template<>
+inline __m128i InitVector<__m128i>(int value) {
+    return _mm_set1_epi32(value);
+}
+
+template<>
+inline __m256i InitVector<__m256i>(int value) {
+    return _mm256_set1_epi32(value);
+}
+
+template<typename T>
+struct AVXTraits;
+
+template<>
+struct AVXTraits<float> {
+    using IVectorType = IVector8;
+    using FloatVectorType = FloatVector;
+    static constexpr size_t kSize = 8;
+};
+
+template<>
+struct AVXTraits<double> {
+    using IVectorType = IVector4;
+    using FloatVectorType = DoubleVector;
+    static constexpr size_t kSize = 4;
 };
 
 template<typename FeatureType>
 struct FlatForest {
     using RandomForestF = RandomForest<FeatureType>;
+    using Traits = AVXTraits<FeatureType>;
+    using IVectorType = typename Traits::IVectorType;
+    using FloatVectorType = typename Traits::FloatVectorType;
+    static constexpr size_t kSize = Traits::kSize;
+
     size_t size_;
     int iTerminator_;
 
@@ -106,7 +154,7 @@ struct FlatForest {
     vector<int> leftIndex_;
     vector<int> rightIndex_;
     vector<FeatureType> nodeValue_;
-    IVector terminator_;
+    IVectorType terminator_;
 
     FlatForest(const RandomForestF& f) {
         iTerminator_ = f.size();
@@ -126,7 +174,7 @@ struct FlatForest {
         featureIndex_[iTerminator_] = 0;
         nodeValue_[iTerminator_] = 0.f;
 
-        terminator_.data_ = _mm256_set1_epi32(iTerminator_);
+        terminator_.data_ = InitVector<typename IVectorType::AVXType>(iTerminator_);
     }
 
     void fill(shared_ptr<typename RandomForestF::Node> node, int nextIndex) {
@@ -161,7 +209,7 @@ struct FlatForest {
         return result;
     }
 
-    static inline __m256i poorManBlend(int mask, const __m256i& a, const __m256i& b) {
+    static inline __m256i poorManBlend8(int mask, const __m256i& a, const __m256i& b) {
     switch (mask) {
         case 0:
             return _mm256_blend_epi32(a, b, 0);
@@ -675,20 +723,22 @@ struct FlatForest {
                 return _mm256_blend_epi32(a, b, 254);
         case 255:
                 return _mm256_blend_epi32(a, b, 255);
+        default:
+            throw std::runtime_error("bad blend mask");
         }
     }
 
-    FloatVector eval8(float** features) {
-        IVector current;
+    FloatVector evalAVX(float** features) {
+        IVector8 current;
         current.data_ = _mm256_set1_epi32(0);
         FloatVector result;
         result.data_ = _mm256_set1_ps(0.f);
 
         FloatVector nodeValues;
-        IVector featureIndices;
+        IVector8 featureIndices;
         FloatVector featureValues;
-        IVector leftIndices;
-        IVector rightIndices;
+        IVector8 leftIndices;
+        IVector8 rightIndices;
         FloatVector featuresHere;
         while (-1 != _mm256_movemask_epi8(_mm256_cmpeq_epi32(current.data_, terminator_.data_))) {
             nodeValues.data_ = _mm256_i32gather_ps(&nodeValue_[0], current.data_, 4);
@@ -702,7 +752,75 @@ struct FlatForest {
                 featuresHere.floatData_[i] = features[i][featureIndices.intData_[i]];
             }
             int mask = _mm256_movemask_ps(_mm256_cmp_ps(featuresHere.data_, featureValues.data_, _CMP_LT_OS));
-            current.data_ = poorManBlend(mask, rightIndices.data_, leftIndices.data_);
+            current.data_ = poorManBlend8(mask, rightIndices.data_, leftIndices.data_);
+        }
+        return result;
+    }
+
+    static inline __m128i poorManBlend4(int mask, const __m128i& a, const __m128i& b) {
+    switch (mask) {
+        case 0:
+                return _mm_blend_epi32(a, b, 0);
+        case 1:
+                return _mm_blend_epi32(a, b, 1);
+        case 2:
+                return _mm_blend_epi32(a, b, 2);
+        case 3:
+                return _mm_blend_epi32(a, b, 3);
+        case 4:
+                return _mm_blend_epi32(a, b, 4);
+        case 5:
+                return _mm_blend_epi32(a, b, 5);
+        case 6:
+                return _mm_blend_epi32(a, b, 6);
+        case 7:
+                return _mm_blend_epi32(a, b, 7);
+        case 8:
+                return _mm_blend_epi32(a, b, 8);
+        case 9:
+                return _mm_blend_epi32(a, b, 9);
+        case 10:
+                return _mm_blend_epi32(a, b, 10);
+        case 11:
+                return _mm_blend_epi32(a, b, 11);
+        case 12:
+                return _mm_blend_epi32(a, b, 12);
+        case 13:
+                return _mm_blend_epi32(a, b, 13);
+        case 14:
+                return _mm_blend_epi32(a, b, 14);
+        case 15:
+                return _mm_blend_epi32(a, b, 15);
+        default:
+            throw std::runtime_error("bad blend mask");
+        }
+    }
+
+    DoubleVector evalAVX(double** features) {
+        IVector4 current;
+        current.data_ = _mm_set1_epi32(0);
+        DoubleVector result;
+        result.data_ = _mm256_set1_pd(0.);
+
+        DoubleVector nodeValues;
+        IVector4 featureIndices;
+        DoubleVector featureValues;
+        IVector4 leftIndices;
+        IVector4 rightIndices;
+        DoubleVector featuresHere;
+        while (((1 << 16) - 1) != _mm_movemask_epi8(_mm_cmpeq_epi32(current.data_, terminator_.data_))) {
+            nodeValues.data_ = _mm256_i32gather_pd(&nodeValue_[0], current.data_, 8);
+            result.data_ = _mm256_add_pd(result.data_, nodeValues.data_);
+
+            featureIndices.data_ = _mm_i32gather_epi32(&featureIndex_[0], current.data_, 4);
+            featureValues.data_ = _mm256_i32gather_pd(&featureValue_[0], current.data_, 8);
+            leftIndices.data_ = _mm_i32gather_epi32(&leftIndex_[0], current.data_, 4);
+            rightIndices.data_ = _mm_i32gather_epi32(&rightIndex_[0], current.data_, 4);
+            for (size_t i = 0; i < 4; ++i) {
+                featuresHere.floatData_[i] = features[i][featureIndices.intData_[i]];
+            }
+            int mask = _mm256_movemask_pd(_mm256_cmp_pd(featuresHere.data_, featureValues.data_, _CMP_LT_OS));
+            current.data_ = poorManBlend4(mask, rightIndices.data_, leftIndices.data_);
         }
         return result;
     }
@@ -750,8 +868,10 @@ struct ScopedTimer {
     chrono::high_resolution_clock::time_point begin_;
 };
 
-int main() {
-    using FT = float;
+template<typename FT>
+void test() {
+    cout << "================" << typeid(FT).name() << "================" << endl;
+
     using RF = RandomForest<FT>;
     static constexpr size_t nFeatures = 100;
     shared_ptr<RF> f;
@@ -761,7 +881,7 @@ int main() {
     }
 
     static constexpr size_t kN = 1000;
-    vector<RF::Features> features(kN);
+    vector<typename RF::Features> features(kN);
     {
         ScopedTimer timer("gen features");
         for (size_t i = 0; i < kN; ++i) {
@@ -791,7 +911,7 @@ int main() {
     }
 
     {
-        ScopedTimer timer("eval");
+        ScopedTimer timer("flat eval");
         FT sum = 0;
         for (size_t j = 0; j < 30; ++j) {
             for (size_t i = 0; i < features.size(); ++i) {
@@ -802,22 +922,26 @@ int main() {
     }
 
     {
-        ScopedTimer timer("eval2");
+        ScopedTimer timer("vector eval");
         FT sum = 0;
         for (size_t j = 0; j < 30; ++j) {
-            for (size_t i = 0; i < features.size()/8; ++i) {
-                FT* data[8];
-                for (size_t k = 0; k < 8; ++k) {
-                    data[k] = &features[8*i + k][0];
+            for (size_t i = 0; i < features.size()/FF::kSize; ++i) {
+                FT* data[FF::kSize];
+                for (size_t k = 0; k < FF::kSize; ++k) {
+                    data[k] = &features[FF::kSize*i + k][0];
                 }
-                FloatVector v = ff->eval8(data);
-                for (size_t k = 0; k < 8; ++k) {
+                typename FF::FloatVectorType v = ff->evalAVX(data);
+                for (size_t k = 0; k < FF::kSize; ++k) {
                     sum += v.floatData_[k];
                 }
             }
         }
         cout << "sum3: " << sum << endl;
     }
+}
 
+int main() {
+    test<double>();
+    test<float>();
     return 0;
 }
