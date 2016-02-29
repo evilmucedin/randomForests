@@ -149,11 +149,8 @@ struct FlatForest {
     using FloatVectorType = typename Traits::FloatVectorType;
     static constexpr size_t kSize = Traits::kSize;
 
-    IVectorType terminator_; // should be the first field
-    void* realPointer_;
-    size_t size_;
     int iTerminator_;
-
+    IVectorType terminator_; // should be the first field
     vector<int> featureIndex_;
     vector<FeatureType> featureValue_;
     vector<int> leftIndex_;
@@ -162,12 +159,12 @@ struct FlatForest {
 
     FlatForest(const RandomForestF& f) {
         iTerminator_ = f.size();
-        size_ = iTerminator_ + 1;
-        featureIndex_.resize(size_);
-        featureValue_.resize(size_);
-        leftIndex_.resize(size_);
-        rightIndex_.resize(size_);
-        nodeValue_.resize(size_);
+        size_t size = iTerminator_ + 1;
+        featureIndex_.resize(size);
+        featureValue_.resize(size);
+        leftIndex_.resize(size);
+        rightIndex_.resize(size);
+        nodeValue_.resize(size);
 
         for (size_t i = 1; i < f.nodes_.size(); ++i) {
             fill(f.nodes_[i - 1], f.nodes_[i]->index_);
