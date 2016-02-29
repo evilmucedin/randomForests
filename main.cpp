@@ -1,4 +1,7 @@
+#include <stdlib.h>
+
 #include <cstdlib>
+#include <cstddef>
 
 #include <iostream>
 #include <vector>
@@ -80,33 +83,33 @@ struct RandomForest {
     }
 };
 
-union __attribute__((aligned(32))) FloatVector {
+union FloatVector {
     using AVXType = __m256;
     static const size_t kSize = 8;
     AVXType data_;
     float floatData_[8];
-};
+} __attribute__((aligned(32), packed));
 
-union __attribute__((aligned(32))) DoubleVector {
+union DoubleVector {
     using AVXType = __m256d;
     static const size_t kSize = 4;
     __m256d data_;
     double floatData_[4];
-};
+} __attribute__((aligned(32), packed));
 
-union __attribute__((aligned(32))) IVector8 {
+union IVector8 {
     using AVXType = __m256i;
     static const size_t kSize = 8;
     __m256i data_;
     int intData_[8];
-};
+} __attribute__((aligned(32), packed));
 
-union __attribute__((aligned(32))) IVector4 {
+union IVector4 {
     using AVXType = __m128i;
     static const size_t kSize = 4;
     __m128i data_;
     int intData_[4];
-};
+} __attribute__((aligned(16), packed));
 
 template<typename T>
 T InitVector(int value);
@@ -146,6 +149,8 @@ struct FlatForest {
     using FloatVectorType = typename Traits::FloatVectorType;
     static constexpr size_t kSize = Traits::kSize;
 
+    IVectorType terminator_; // should be the first field
+    void* realPointer_;
     size_t size_;
     int iTerminator_;
 
@@ -154,7 +159,6 @@ struct FlatForest {
     vector<int> leftIndex_;
     vector<int> rightIndex_;
     vector<FeatureType> nodeValue_;
-    IVectorType terminator_;
 
     FlatForest(const RandomForestF& f) {
         iTerminator_ = f.size();
@@ -173,11 +177,20 @@ struct FlatForest {
         rightIndex_[iTerminator_] = iTerminator_;
         featureIndex_[iTerminator_] = 0;
         nodeValue_[iTerminator_] = 0.f;
+        featureValue_[iTerminator_] = numeric_limits<FeatureType>::max();
 
+        size_t address = reinterpret_cast<size_t>(&(terminator_.data_));
+        if (address % 16) {
+            cout << "address: " << (address % 16) << " " << sizeof(terminator_.data_) << endl;
+            throw std::runtime_error("bad alignment");
+        }
         terminator_.data_ = InitVector<typename IVectorType::AVXType>(iTerminator_);
     }
 
     void fill(shared_ptr<typename RandomForestF::Node> node, int nextIndex) {
+        if (node->index_ >= featureIndex_.size()) {
+            throw std::runtime_error("tree invariant failed");
+        }
         if (!node->isLeaf_) {
             featureIndex_[node->index_] = node->featureIndex_;
             featureValue_[node->index_] = node->featureValue_;
@@ -188,7 +201,7 @@ struct FlatForest {
             fill(node->right_, nextIndex);
         } else {
             featureIndex_[node->index_] = 0;
-            featureValue_[node->index_] = numeric_limits<float>::max();
+            featureValue_[node->index_] = numeric_limits<FeatureType>::max();
             leftIndex_[node->index_] = nextIndex;
             rightIndex_[node->index_] = nextIndex;
             nodeValue_[node->index_] = node->leafValue_;
@@ -824,6 +837,31 @@ struct FlatForest {
         }
         return result;
     }
+
+    static void* operator new(size_t size) throw()
+    {
+        cout << "new " << offsetof(FlatForest<FeatureType>, terminator_) << endl;
+        void* mem = malloc(size + 32 + sizeof(void*));
+        char* alignedMem = reinterpret_cast<char*>(mem) + sizeof(void*);
+        size_t sMem = reinterpret_cast<size_t>(alignedMem);
+        if (sMem % 32) {
+            alignedMem += 32 - (sMem % 32);
+        }
+        *(reinterpret_cast<void**>(alignedMem - sizeof(void*))) = mem;
+
+        return alignedMem;
+    }
+
+    static void operator delete(void* ptr) throw()
+    {
+        cout << "delete" << endl;
+        void** mem = reinterpret_cast<void**>(reinterpret_cast<char*>(ptr) - sizeof(void*));
+
+        free(*mem);
+    }
+
+    static void* operator new(std::size_t, void *) throw() = delete;
+    static void operator delete (void *, void *) throw() = delete;
 };
 
 template<typename FeatureType>
@@ -907,7 +945,7 @@ void test() {
     shared_ptr<FF> ff;
     {
         ScopedTimer timer("flattening");
-        ff = make_shared<FF>(*f);
+        ff = shared_ptr<FF>(new FF(*f));
     }
 
     {
